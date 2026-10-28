@@ -1,13 +1,14 @@
 spring:
   application:
     name: test-exchange-service
+  config:
+    import: optional:file:.env[.properties]
   datasource:
     url: jdbc:h2:mem:testdb
     driver-class-name: org.h2.Driver
     username: sa
     password: password
   jpa:
-    database-platform: org.hibernate.dialect.H2Dialect
     hibernate:
       ddl-auto: update
     show-sql: true
@@ -16,11 +17,18 @@ spring:
     console:
       enabled: true
       path: /h2-console
+  cloud:
+    openfeign:
+      client:
+        config:
+          default:
+            connect-timeout: 3000
+            read-timeout: 5000
 
 exchange-rate:
   api:
     base-url: https://v6.exchangerate-api.com/v6
-    key: "*****"
+    key: ${EXCHANGE_API_KEY:}
 
 
 #Abre http://localhost:8080/h2-console
