@@ -14,6 +14,7 @@ Microservicio en Java para consumir un servicio externo de tipo de cambio y expo
 | Spring Boot | 4.0.6 |
 | Spring Cloud OpenFeign | 2025.1.1 |
 | Resilience4j (Retry + Circuit Breaker) | 2.3.0 |
+| springdoc-openapi (Swagger UI) | 3.0.3 |
 | H2 (base de datos en memoria) | Runtime |
 | Spring Data JPA | Incluido |
 | Lombok | Incluido |
@@ -246,6 +247,17 @@ curl -X POST http://localhost:8080/api/conversion \
 
 Los códigos de moneda también se aceptan en minúsculas: `usd` se normaliza a `USD`.
 
+### Documentación de la API (Swagger)
+
+Con la aplicación levantada:
+
+| Recurso | URL |
+|---|---|
+| Swagger UI | `http://localhost:8080/swagger-ui.html` |
+| Especificación OpenAPI (JSON) | `http://localhost:8080/v3/api-docs` |
+
+Desde Swagger UI se puede probar el endpoint directamente: el request de ejemplo ya viene cargado y están documentadas las respuestas 200, 400, 503 y 500, con ejemplos de cada error.
+
 ---
 
 ## Manejo de errores
@@ -290,3 +302,4 @@ Todas las respuestas de error tienen el mismo formato:
 | `ConversionRepositoryImplTest` | Persistencia en H2 con `@DataJpaTest` |
 | `ConversionControllerTest` | Contrato JSON y respuestas 200, 400, 405 y 503 |
 | `ConversionIntegrationTest` | Flujo completo, del endpoint a H2, con la API externa simulada |
+| `OpenApiDocumentationTest` | Especificación OpenAPI publicada (endpoint, respuestas y validaciones) y Swagger UI disponible |

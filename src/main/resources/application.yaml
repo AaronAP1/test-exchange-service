@@ -51,6 +51,11 @@ resilience4j:
         record-exceptions:
           - feign.FeignException
 
+springdoc:
+  default-produces-media-type: application/json
+  swagger-ui:
+    try-it-out-enabled: true
+
 exchange-rate:
   api:
     base-url: https://v6.exchangerate-api.com/v6
