@@ -13,6 +13,7 @@ Microservicio en Java para consumir un servicio externo de tipo de cambio y expo
 | Java | 17 |
 | Spring Boot | 4.0.6 |
 | Spring Cloud OpenFeign | 2025.1.1 |
+| Resilience4j (Retry + Circuit Breaker) | 2.3.0 |
 | H2 (base de datos en memoria) | Runtime |
 | Spring Data JPA | Incluido |
 | Lombok | Incluido |
@@ -155,9 +156,48 @@ pe.test.exchange
 - **El dominio no depende de Feign ni de Spring Data.** Solo define los contratos `ExchangeRateProvider` y `ConversionRepository`, y la infraestructura los implementa.
 - **La regla de negocio vive en el modelo.** `Conversion.crear(...)` calcula `monto × tipoCambio` con `BigDecimal`, redondea a 2 decimales con `HALF_UP` y valida que el monto y el tipo de cambio sean positivos.
 - **Moneda no soportada.** ExchangeRate-API responde `404` con `"error-type": "unsupported-code"` en el cuerpo. El cliente Feign usa `dismiss404` para decodificar ese cuerpo y el adaptador lo convierte en `MonedaInvalidaException`. Si la moneda destino no aparece entre las tasas, también se trata como moneda inválida.
-- **Servicio externo no disponible.** Un timeout (3 s de conexión, 5 s de lectura), una key inválida, la cuota agotada o un error 5xx se convierten en `ServicioTipoCambioNoDisponibleException`, que responde 503.
+- **Servicio externo no disponible.** Las fallas transitorias se reintentan y un circuit breaker deja de llamar a la API cuando falla de forma repetida (ver [Resiliencia](#resiliencia)). Si al final no se obtiene el tipo de cambio, se lanza `ServicioTipoCambioNoDisponibleException` y se responde 503.
 - **La API key no se expone.** No se versiona, porque vive en `.env` y git lo ignora. Tampoco se escribe en los logs: el mensaje de `FeignException` incluye la URL con la key, así que solo se registra el status.
 - **El caso de uso no lleva `@Transactional`.** Así no se retiene una conexión a la base de datos mientras se espera a la API externa. El `save` del repositorio ya es transaccional.
+
+---
+
+## Resiliencia
+
+`ExchangeRateApiAdapter.obtenerTipoCambio` lleva `@Retry` y `@CircuitBreaker` de Resilience4j, ambos con la instancia `exchangeRateApi`, configurada en `application.yaml`. Retry envuelve al Circuit Breaker, así que cada intento cuenta para el circuito y, si el circuito está abierto, no se reintenta.
+
+Las `FeignException` salen del método sin traducir para que Resilience4j decida qué hacer con ellas. Después, el fallback `servicioNoDisponible` las convierte en `ServicioTipoCambioNoDisponibleException`, sin registrar el mensaje original porque contiene la URL con la key.
+
+### Retry
+
+| Parámetro | Valor |
+|---|---|
+| Intentos máximos | 3 (1 + 2 reintentos) |
+| Espera entre intentos | 500 ms, con backoff exponencial ×2 (500 ms, 1 s) |
+| Se reintenta | Timeouts y errores de conexión (`RetryableException`) y respuestas 5xx (`FeignServerException`) |
+| No se reintenta | Moneda inválida, key inválida (403), cuota agotada (429) ni circuito abierto, porque reintentar no cambiaría el resultado |
+
+Los timeouts de Feign son de 2 s para conectar y 3 s para leer, así que el peor caso de una llamada ronda los 10 s.
+
+### Circuit Breaker
+
+| Parámetro | Valor |
+|---|---|
+| Ventana | Últimas 10 llamadas, con un mínimo de 5 para evaluar |
+| Umbral de apertura | 50 % de fallos |
+| Tiempo abierto | 30 s; luego pasa solo a semiabierto |
+| Llamadas de prueba en semiabierto | 2 |
+| Cuenta como fallo | Cualquier `FeignException`. Una moneda inválida no cuenta, porque la API respondió bien. |
+
+Mientras el circuito está abierto, el servicio responde 503 de inmediato, sin llamar a la API. Así no se acumulan hilos esperando timeouts y no se gasta la cuota del plan gratuito.
+
+Comportamiento medido con la API caída (puerto cerrado):
+
+| Llamada | Qué pasa | Tiempo |
+|---|---|---|
+| 1 | 3 intentos con backoff → 503 | ~1.9 s |
+| 2 | Al 5.º fallo se abre el circuito y el 3.er intento se rechaza → 503 | ~1.5 s |
+| 3 en adelante | Circuito abierto → 503 sin llamar a la API | ~5 ms |
 
 ---
 
@@ -245,8 +285,8 @@ Todas las respuestas de error tienen el mismo formato:
 |---|---|
 | `ConversionTest` | Cálculo, redondeo `HALF_UP`, fecha de la operación e invariantes del dominio |
 | `ConversionServiceTest` | Orquestación del caso de uso, normalización y que no se guarde nada ante un error |
-| `ExchangeRateApiAdapterTest` | Conversión de respuestas y fallos de la API en errores de dominio |
-| `ExchangeRateApiAdapterIntegrationTest` | Cliente Feign real contra un servidor HTTP local que imita la API (200, 404 `unsupported-code`, 403, 500) |
+| `ExchangeRateApiAdapterTest` | Conversión de respuestas de la API en errores de dominio |
+| `ExchangeRateApiAdapterIntegrationTest` | Cliente Feign real y Resilience4j contra un servidor HTTP local que imita la API: 404 `unsupported-code` sin reintento, 403 sin reintento, reintentos ante 5xx y timeouts, recuperación en el segundo intento, apertura del circuito y que una moneda inválida no cuente como fallo |
 | `ConversionRepositoryImplTest` | Persistencia en H2 con `@DataJpaTest` |
 | `ConversionControllerTest` | Contrato JSON y respuestas 200, 400, 405 y 503 |
 | `ConversionIntegrationTest` | Flujo completo, del endpoint a H2, con la API externa simulada |

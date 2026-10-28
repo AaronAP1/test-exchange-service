@@ -67,11 +67,11 @@ class ExchangeRateApiAdapterTest {
     }
 
     @Test
-    void lanzaServicioNoDisponibleSiFallaLaLlamada() {
+    void dejaPasarLosErroresDeFeignParaQueLosGestioneResilience4j() {
         when(client.getLatestRates(API_KEY, "USD")).thenThrow(FeignException.class);
 
         assertThatThrownBy(() -> adapter.obtenerTipoCambio("USD", "PEN"))
-                .isInstanceOf(ServicioTipoCambioNoDisponibleException.class);
+                .isInstanceOf(FeignException.class);
     }
 
     @Test
