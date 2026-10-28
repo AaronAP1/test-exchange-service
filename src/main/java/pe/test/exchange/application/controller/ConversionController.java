@@ -47,7 +47,7 @@ public class ConversionController {
             @ExampleObject(value = """
                     {"timestamp": "2026-10-27T20:56:21.423", "status": 503,
                      "mensaje": "El servicio de tipo de cambio no está disponible, intente nuevamente más tarde"}""")))
-    @ApiResponse(responseCode = "500", description = "Error inesperado",
+    @ApiResponse(responseCode = "500", description = "No se pudo registrar la conversión o error inesperado",
             content = @Content(schema = @Schema(implementation = ErrorResponse.class)))
     @PostMapping
     public ConversionResponse convertir(@Valid @RequestBody ConversionRequest request) {

@@ -131,6 +131,7 @@ Almacenar cada conversión en H2 con los siguientes datos:
 pe.test.exchange
 ├── domain
 │   ├── model           Conversion: entidad JPA con la regla de cálculo
+│   │                   Moneda, TipoCambio: Value Objects
 │   ├── repository      ConversionRepository: contrato de persistencia
 │   ├── service         ExchangeRateProvider: contrato para obtener el tipo de cambio
 │   └── exception       MonedaInvalidaException, ServicioTipoCambioNoDisponibleException
@@ -140,13 +141,14 @@ pe.test.exchange
 │   └── dto             ConversionRequest, ConversionResponse, ErrorResponse
 └── infrastructure
     ├── external        ExchangeRateApiClient (Feign) y ExchangeRateApiAdapter
-    └── persistence     ConversionJpaRepository y ConversionRepositoryImpl
+    └── persistence     ConversionJpaRepository, ConversionRepositoryImpl
+                        MonedaConverter, TipoCambioConverter
 ```
 
 ### Flujo
 
 1. `ConversionController` recibe el `POST /api/conversion` y valida el request.
-2. `ConversionService` normaliza las monedas y pide el tipo de cambio a `ExchangeRateProvider`.
+2. `ConversionService` crea las `Moneda` (que normalizan el código) y pide el `TipoCambio` a `ExchangeRateProvider`.
 3. `ExchangeRateApiAdapter` consulta ExchangeRate-API con el cliente Feign.
 4. `Conversion.crear(...)` calcula el monto convertido.
 5. `ConversionRepository` guarda la conversión en H2.
@@ -155,8 +157,13 @@ pe.test.exchange
 ### Decisiones de diseño
 
 - **El dominio no depende de Feign ni de Spring Data.** Solo define los contratos `ExchangeRateProvider` y `ConversionRepository`, y la infraestructura los implementa.
-- **La regla de negocio vive en el modelo.** `Conversion.crear(...)` calcula `monto × tipoCambio` con `BigDecimal`, redondea a 2 decimales con `HALF_UP` y valida que el monto y el tipo de cambio sean positivos.
+- **La regla de negocio vive en el modelo.** `Conversion.crear(...)` calcula `monto × tipoCambio` con `BigDecimal`, redondea a 2 decimales con `HALF_UP` y valida que el monto sea positivo.
+- **Value Objects.** `Moneda` garantiza un código de 3 letras en mayúsculas. `TipoCambio` garantiza un valor positivo con 10 decimales como máximo y compara por valor numérico, así que `3.4486` y `3.44860` son el mismo tipo de cambio. Son inmutables (`record`) y validan al construirse, así que un `Conversion` nunca tiene una moneda o un tipo de cambio inválidos, venga de donde venga.
+- **Los Value Objects no conocen JPA.** `Conversion` sigue siendo la entidad JPA, pero `Moneda` y `TipoCambio` se guardan como columnas simples (`varchar(3)` y `numeric(19,10)`) con dos `AttributeConverter` de infraestructura con `autoApply`. Así el dominio no referencia ninguna clase de infraestructura.
+- **Columnas dimensionadas para no perder datos.** `tipo_cambio` guarda los 10 decimales del `TipoCambio`, así que se guarda el mismo valor que se aplicó y se respondió. Antes eran 6 y una tasa como VND → USD (0.0000394117) se guardaba como 0.000039. `monto_convertido` tiene 28 dígitos: 17 enteros del monto más 9 del tipo de cambio. Antes eran 19, y un monto de 17 enteros con un tipo de cambio alto desbordaba la columna.
 - **Moneda no soportada.** ExchangeRate-API responde `404` con `"error-type": "unsupported-code"` en el cuerpo. El cliente Feign usa `dismiss404` para decodificar ese cuerpo y el adaptador lo convierte en `MonedaInvalidaException`. Si la moneda destino no aparece entre las tasas, también se trata como moneda inválida.
+- **Respuesta inválida del proveedor.** Si la API responde algo que no es JSON, una lista de tasas vacía o un tipo de cambio de 0 o negativo, el adaptador lanza `ServicioTipoCambioNoDisponibleException` y se responde 503. Es un error del proveedor: no se culpa al cliente con un 400 ni se responde un 500 genérico.
+- **Error de persistencia.** El caso de uso responde después de guardar, así que si el guardado falla el cliente no recibe una conversión que no quedó registrada. Se responde 500 con un mensaje propio.
 - **Servicio externo no disponible.** Las fallas transitorias se reintentan y un circuit breaker deja de llamar a la API cuando falla de forma repetida (ver [Resiliencia](#resiliencia)). Si al final no se obtiene el tipo de cambio, se lanza `ServicioTipoCambioNoDisponibleException` y se responde 503.
 - **La API key no se expone.** No se versiona, porque vive en `.env` y git lo ignora. Tampoco se escribe en los logs: el mensaje de `FeignException` incluye la URL con la key, así que solo se registra el status.
 - **El caso de uso no lleva `@Transactional`.** Así no se retiene una conexión a la base de datos mientras se espera a la API externa. El `save` del repositorio ya es transaccional.
@@ -282,7 +289,8 @@ Todas las respuestas de error tienen el mismo formato:
 | Datos inválidos: monto ≤ 0, más de 2 decimales, o moneda vacía o que no tiene 3 letras | 400 | `La solicitud contiene datos inválidos`, con `detalles` |
 | JSON mal formado | 400 | `El cuerpo de la solicitud no es un JSON válido` |
 | Moneda no soportada (por ejemplo `XYZ`) | 400 | `La moneda 'XYZ' no es válida o no está soportada` |
-| API externa caída, timeout, key inválida o cuota agotada | 503 | `El servicio de tipo de cambio no está disponible, intente nuevamente más tarde` |
+| API externa caída, timeout, key inválida, cuota agotada o respuesta inválida (no es JSON, sin tasas, tipo de cambio ≤ 0) | 503 | `El servicio de tipo de cambio no está disponible, intente nuevamente más tarde` |
+| No se pudo guardar la conversión | 500 | `No se pudo registrar la conversión, intente nuevamente más tarde` |
 | Error inesperado | 500 | `Ocurrió un error inesperado` |
 
 ---
@@ -295,11 +303,13 @@ Todas las respuestas de error tienen el mismo formato:
 
 | Clase | Qué cubre |
 |---|---|
-| `ConversionTest` | Cálculo, redondeo `HALF_UP`, fecha de la operación e invariantes del dominio |
-| `ConversionServiceTest` | Orquestación del caso de uso, normalización y que no se guarde nada ante un error |
-| `ExchangeRateApiAdapterTest` | Conversión de respuestas de la API en errores de dominio |
-| `ExchangeRateApiAdapterIntegrationTest` | Cliente Feign real y Resilience4j contra un servidor HTTP local que imita la API: 404 `unsupported-code` sin reintento, 403 sin reintento, reintentos ante 5xx y timeouts, recuperación en el segundo intento, apertura del circuito y que una moneda inválida no cuente como fallo |
-| `ConversionRepositoryImplTest` | Persistencia en H2 con `@DataJpaTest` |
-| `ConversionControllerTest` | Contrato JSON y respuestas 200, 400, 405 y 503 |
-| `ConversionIntegrationTest` | Flujo completo, del endpoint a H2, con la API externa simulada |
+| `ConversionTest` | Cálculo, redondeo `HALF_UP`, tipos de cambio muy pequeños, fecha de la operación e invariantes del dominio |
+| `MonedaTest`, `TipoCambioTest` | Validación, normalización, escala e igualdad por valor de los Value Objects |
+| `ConversionServiceTest` | Orquestación del caso de uso, normalización, que no se guarde nada si falla el proveedor y que un error al guardar se propague |
+| `ExchangeRateApiAdapterTest` | Conversión de respuestas de la API en errores de dominio, incluidas las inválidas: sin cuerpo, sin tasas y tipo de cambio ≤ 0 |
+| `ExchangeRateApiAdapterIntegrationTest` | Cliente Feign real y Resilience4j contra un servidor HTTP local que imita la API: 404 `unsupported-code` sin reintento, 403 sin reintento, respuesta que no es JSON, reintentos ante 5xx y timeouts, recuperación en el segundo intento, apertura del circuito, paso de semiabierto a cerrado o de vuelta a abierto, y que una moneda inválida no cuente como fallo |
+| `ExchangeRateApiAdapterProveedorCaidoTest` | API caída (puerto sin servidor): 3 intentos que cuentan como fallos del circuito y 503 |
+| `ConversionRepositoryImplTest` | Persistencia en H2 con `@DataJpaTest`, sin perder decimales del tipo de cambio y con el monto máximo sin desbordar |
+| `ConversionControllerTest` | Contrato JSON y respuestas 200, 400 (datos inválidos, más de 2 decimales, JSON mal formado, moneda no soportada), 405, 500 (error al guardar e inesperado) y 503 |
+| `ConversionIntegrationTest` | Flujo completo, del endpoint a H2, con la API externa simulada, incluido un tipo de cambio inválido que responde 503 sin guardar nada |
 | `OpenApiDocumentationTest` | Especificación OpenAPI publicada (endpoint, respuestas y validaciones) y Swagger UI disponible |

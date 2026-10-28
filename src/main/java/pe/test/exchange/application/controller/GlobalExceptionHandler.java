@@ -1,6 +1,7 @@
 package pe.test.exchange.application.controller;
 
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
@@ -40,6 +41,14 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(ServicioTipoCambioNoDisponibleException.class)
     public ResponseEntity<ErrorResponse> manejarServicioNoDisponible(ServicioTipoCambioNoDisponibleException ex) {
         return construir(HttpStatus.SERVICE_UNAVAILABLE, ex.getMessage(), List.of());
+    }
+
+    // El caso de uso responde después de guardar: si el guardado falla, el cliente no recibe una conversión sin registrar
+    @ExceptionHandler(DataAccessException.class)
+    public ResponseEntity<ErrorResponse> manejarErrorDePersistencia(DataAccessException ex) {
+        log.error("No se pudo registrar la conversión", ex);
+        return construir(HttpStatus.INTERNAL_SERVER_ERROR,
+                "No se pudo registrar la conversión, intente nuevamente más tarde", List.of());
     }
 
     @ExceptionHandler(Exception.class)

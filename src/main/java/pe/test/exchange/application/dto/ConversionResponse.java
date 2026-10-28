@@ -26,9 +26,9 @@ public record ConversionResponse(
         return new ConversionResponse(
                 conversion.getMonto(),
                 conversion.getMontoConvertido(),
-                conversion.getMonedaOrigen(),
-                conversion.getMonedaDestino(),
-                conversion.getTipoCambio()
+                conversion.getMonedaOrigen().codigo(),
+                conversion.getMonedaDestino().codigo(),
+                conversion.getTipoCambio().valor()
         );
     }
 }

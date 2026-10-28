@@ -12,6 +12,7 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import pe.test.exchange.domain.exception.MonedaInvalidaException;
 import pe.test.exchange.domain.exception.ServicioTipoCambioNoDisponibleException;
+import pe.test.exchange.domain.model.Moneda;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -40,6 +41,10 @@ class ExchangeRateApiAdapterIntegrationTest {
     private static final String RESPUESTA_EXITOSA = """
             {"result":"success","base_code":"USD","conversion_rates":{"USD":1,"PEN":3.4486}}
             """;
+
+    private static final Moneda USD = Moneda.de("USD");
+    private static final Moneda PEN = Moneda.de("PEN");
+    private static final Moneda XYZ = Moneda.de("XYZ");
 
     private static final ConcurrentLinkedDeque<Respuesta> RESPUESTAS = new ConcurrentLinkedDeque<>();
     private static final AtomicInteger PETICIONES = new AtomicInteger();
@@ -75,7 +80,7 @@ class ExchangeRateApiAdapterIntegrationTest {
     void obtieneElTipoDeCambioDesdeLaApi() {
         responder(new Respuesta(200, RESPUESTA_EXITOSA));
 
-        assertThat(adapter.obtenerTipoCambio("USD", "PEN")).isEqualByComparingTo("3.4486");
+        assertThat(adapter.obtenerTipoCambio(USD, PEN).valor()).isEqualByComparingTo("3.4486");
         assertThat(rutaSolicitada).isEqualTo("/v6/test-key/latest/USD");
         assertThat(PETICIONES).hasValue(1);
     }
@@ -86,7 +91,7 @@ class ExchangeRateApiAdapterIntegrationTest {
                 {"result":"error","error-type":"unsupported-code"}
                 """));
 
-        assertThatThrownBy(() -> adapter.obtenerTipoCambio("XYZ", "PEN"))
+        assertThatThrownBy(() -> adapter.obtenerTipoCambio(XYZ, PEN))
                 .isInstanceOf(MonedaInvalidaException.class)
                 .hasMessageContaining("XYZ");
         assertThat(PETICIONES).hasValue(1);
@@ -98,7 +103,16 @@ class ExchangeRateApiAdapterIntegrationTest {
                 {"result":"error","error-type":"invalid-key"}
                 """));
 
-        assertThatThrownBy(() -> adapter.obtenerTipoCambio("USD", "PEN"))
+        assertThatThrownBy(() -> adapter.obtenerTipoCambio(USD, PEN))
+                .isInstanceOf(ServicioTipoCambioNoDisponibleException.class);
+        assertThat(PETICIONES).hasValue(1);
+    }
+
+    @Test
+    void traduceUnaRespuestaQueNoEsJsonSinReintentar() {
+        responder(new Respuesta(200, "<html><body>En mantenimiento</body></html>"));
+
+        assertThatThrownBy(() -> adapter.obtenerTipoCambio(USD, PEN))
                 .isInstanceOf(ServicioTipoCambioNoDisponibleException.class);
         assertThat(PETICIONES).hasValue(1);
     }
@@ -107,7 +121,7 @@ class ExchangeRateApiAdapterIntegrationTest {
     void reintentaLosErroresDelServidorAntesDeDarsePorVencido() {
         responder(new Respuesta(500, "{}"));
 
-        assertThatThrownBy(() -> adapter.obtenerTipoCambio("USD", "PEN"))
+        assertThatThrownBy(() -> adapter.obtenerTipoCambio(USD, PEN))
                 .isInstanceOf(ServicioTipoCambioNoDisponibleException.class);
         assertThat(PETICIONES).hasValue(3);
     }
@@ -116,7 +130,7 @@ class ExchangeRateApiAdapterIntegrationTest {
     void reintentaLosTimeouts() {
         responder(new Respuesta(200, RESPUESTA_EXITOSA, 600));
 
-        assertThatThrownBy(() -> adapter.obtenerTipoCambio("USD", "PEN"))
+        assertThatThrownBy(() -> adapter.obtenerTipoCambio(USD, PEN))
                 .isInstanceOf(ServicioTipoCambioNoDisponibleException.class);
         assertThat(PETICIONES).hasValue(3);
     }
@@ -125,7 +139,7 @@ class ExchangeRateApiAdapterIntegrationTest {
     void seRecuperaSiElSegundoIntentoFunciona() {
         responder(new Respuesta(503, "{}"), new Respuesta(200, RESPUESTA_EXITOSA));
 
-        assertThat(adapter.obtenerTipoCambio("USD", "PEN")).isEqualByComparingTo("3.4486");
+        assertThat(adapter.obtenerTipoCambio(USD, PEN).valor()).isEqualByComparingTo("3.4486");
         assertThat(PETICIONES).hasValue(2);
     }
 
@@ -133,15 +147,41 @@ class ExchangeRateApiAdapterIntegrationTest {
     void abreElCircuitoTrasFallosRepetidosYDejaDeLlamarALaApi() {
         responder(new Respuesta(500, "{}"));
         for (int i = 0; i < 2; i++) {
-            assertThatThrownBy(() -> adapter.obtenerTipoCambio("USD", "PEN"))
+            assertThatThrownBy(() -> adapter.obtenerTipoCambio(USD, PEN))
                     .isInstanceOf(ServicioTipoCambioNoDisponibleException.class);
         }
         assertThat(circuitBreaker().getState()).isEqualTo(CircuitBreaker.State.OPEN);
         int peticionesAntes = PETICIONES.get();
 
-        assertThatThrownBy(() -> adapter.obtenerTipoCambio("USD", "PEN"))
+        assertThatThrownBy(() -> adapter.obtenerTipoCambio(USD, PEN))
                 .isInstanceOf(ServicioTipoCambioNoDisponibleException.class);
         assertThat(PETICIONES).hasValue(peticionesAntes);
+    }
+
+    @Test
+    void cierraElCircuitoSiLasLlamadasDePruebaFuncionan() {
+        abrirYPasarASemiabierto();
+        responder(new Respuesta(200, RESPUESTA_EXITOSA));
+
+        for (int i = 0; i < 2; i++) {
+            assertThat(adapter.obtenerTipoCambio(USD, PEN).valor()).isEqualByComparingTo("3.4486");
+        }
+
+        assertThat(circuitBreaker().getState()).isEqualTo(CircuitBreaker.State.CLOSED);
+        assertThat(PETICIONES).hasValue(2);
+    }
+
+    @Test
+    void reabreElCircuitoSiLasLlamadasDePruebaFallan() {
+        abrirYPasarASemiabierto();
+        responder(new Respuesta(500, "{}"));
+
+        assertThatThrownBy(() -> adapter.obtenerTipoCambio(USD, PEN))
+                .isInstanceOf(ServicioTipoCambioNoDisponibleException.class);
+
+        // Los 2 primeros intentos agotan las llamadas de prueba y reabren el circuito: el 3.º ya no llega a la API
+        assertThat(circuitBreaker().getState()).isEqualTo(CircuitBreaker.State.OPEN);
+        assertThat(PETICIONES).hasValue(2);
     }
 
     @Test
@@ -150,7 +190,7 @@ class ExchangeRateApiAdapterIntegrationTest {
                 {"result":"error","error-type":"unsupported-code"}
                 """));
         for (int i = 0; i < 6; i++) {
-            assertThatThrownBy(() -> adapter.obtenerTipoCambio("XYZ", "PEN"))
+            assertThatThrownBy(() -> adapter.obtenerTipoCambio(XYZ, PEN))
                     .isInstanceOf(MonedaInvalidaException.class);
         }
 
@@ -160,6 +200,12 @@ class ExchangeRateApiAdapterIntegrationTest {
 
     private CircuitBreaker circuitBreaker() {
         return circuitBreakerRegistry.circuitBreaker(ExchangeRateApiAdapter.RESILIENCIA);
+    }
+
+    /** Equivale a que el circuito se abrió y ya pasaron los 30 s de espera. */
+    private void abrirYPasarASemiabierto() {
+        circuitBreaker().transitionToOpenState();
+        circuitBreaker().transitionToHalfOpenState();
     }
 
     /** Encola las respuestas en orden; la última se repite para las peticiones siguientes. */

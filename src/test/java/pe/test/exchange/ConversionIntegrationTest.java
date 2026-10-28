@@ -8,6 +8,7 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import pe.test.exchange.domain.model.Moneda;
 import pe.test.exchange.infrastructure.external.ExchangeRateApiClient;
 import pe.test.exchange.infrastructure.external.dto.ExchangeRateApiResponse;
 import pe.test.exchange.infrastructure.persistence.ConversionJpaRepository;
@@ -55,9 +56,9 @@ class ConversionIntegrationTest {
 
         assertThat(conversionJpaRepository.findAll()).singleElement().satisfies(conversion -> {
             assertThat(conversion.getMonto()).isEqualByComparingTo("100");
-            assertThat(conversion.getMonedaOrigen()).isEqualTo("USD");
-            assertThat(conversion.getMonedaDestino()).isEqualTo("PEN");
-            assertThat(conversion.getTipoCambio()).isEqualByComparingTo("3.4486");
+            assertThat(conversion.getMonedaOrigen()).isEqualTo(Moneda.de("USD"));
+            assertThat(conversion.getMonedaDestino()).isEqualTo(Moneda.de("PEN"));
+            assertThat(conversion.getTipoCambio().valor()).isEqualByComparingTo("3.4486");
             assertThat(conversion.getMontoConvertido()).isEqualByComparingTo("344.86");
             assertThat(conversion.getFechaOperacion()).isNotNull();
         });
@@ -74,6 +75,22 @@ class ConversionIntegrationTest {
                                 {"monto": 100, "monedaOrigen": "XYZ", "monedaDestino": "PEN"}
                                 """))
                 .andExpect(status().isBadRequest());
+
+        assertThat(conversionJpaRepository.count()).isZero();
+    }
+
+    @Test
+    void respondeServiceUnavailableSinPersistirSiLaApiDevuelveUnTipoDeCambioInvalido() throws Exception {
+        when(exchangeRateApiClient.getLatestRates("test-key", "USD")).thenReturn(new ExchangeRateApiResponse(
+                "success", "USD", Map.of("USD", BigDecimal.ONE, "PEN", BigDecimal.ZERO), null));
+
+        mockMvc.perform(post("/api/conversion")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"monto": 100, "monedaOrigen": "USD", "monedaDestino": "PEN"}
+                                """))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.status").value(503));
 
         assertThat(conversionJpaRepository.count()).isZero();
     }

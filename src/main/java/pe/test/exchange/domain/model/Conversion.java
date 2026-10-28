@@ -30,31 +30,33 @@ public class Conversion {
     @Column(nullable = false, precision = 19, scale = 2)
     private BigDecimal monto;
 
+    // Moneda y TipoCambio se guardan como columnas simples con los converters de infrastructure/persistence
     @Column(name = "moneda_origen", nullable = false, length = 3)
-    private String monedaOrigen;
+    private Moneda monedaOrigen;
 
     @Column(name = "moneda_destino", nullable = false, length = 3)
-    private String monedaDestino;
+    private Moneda monedaDestino;
 
-    @Column(name = "tipo_cambio", nullable = false, precision = 19, scale = 6)
-    private BigDecimal tipoCambio;
+    @Column(name = "tipo_cambio", nullable = false, precision = 19, scale = TipoCambio.DECIMALES)
+    private TipoCambio tipoCambio;
 
-    @Column(name = "monto_convertido", nullable = false, precision = 19, scale = 2)
+    // 28 dígitos: los 17 enteros que admite el monto más los 9 del tipo de cambio, para que nunca desborde
+    @Column(name = "monto_convertido", nullable = false, precision = 28, scale = 2)
     private BigDecimal montoConvertido;
 
     @Column(name = "fecha_operacion", nullable = false)
     private LocalDateTime fechaOperacion;
 
-    private Conversion(BigDecimal monto, String monedaOrigen, String monedaDestino, BigDecimal tipoCambio) {
+    private Conversion(BigDecimal monto, Moneda monedaOrigen, Moneda monedaDestino, TipoCambio tipoCambio) {
         this.monto = validarPositivo(monto, "monto");
         this.monedaOrigen = Objects.requireNonNull(monedaOrigen, "monedaOrigen");
         this.monedaDestino = Objects.requireNonNull(monedaDestino, "monedaDestino");
-        this.tipoCambio = validarPositivo(tipoCambio, "tipoCambio");
-        this.montoConvertido = monto.multiply(tipoCambio).setScale(DECIMALES_MONTO, RoundingMode.HALF_UP);
+        this.tipoCambio = Objects.requireNonNull(tipoCambio, "tipoCambio");
+        this.montoConvertido = monto.multiply(tipoCambio.valor()).setScale(DECIMALES_MONTO, RoundingMode.HALF_UP);
         this.fechaOperacion = LocalDateTime.now();
     }
 
-    public static Conversion crear(BigDecimal monto, String monedaOrigen, String monedaDestino, BigDecimal tipoCambio) {
+    public static Conversion crear(BigDecimal monto, Moneda monedaOrigen, Moneda monedaDestino, TipoCambio tipoCambio) {
         return new Conversion(monto, monedaOrigen, monedaDestino, tipoCambio);
     }
 

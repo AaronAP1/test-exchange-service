@@ -1,8 +1,9 @@
 package pe.test.exchange.domain.service;
 
-import java.math.BigDecimal;
+import pe.test.exchange.domain.model.Moneda;
+import pe.test.exchange.domain.model.TipoCambio;
 
 public interface ExchangeRateProvider {
 
-    BigDecimal obtenerTipoCambio(String monedaOrigen, String monedaDestino);
+    TipoCambio obtenerTipoCambio(Moneda monedaOrigen, Moneda monedaDestino);
 }

@@ -3,6 +3,7 @@ package pe.test.exchange.application.controller;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
@@ -68,6 +69,17 @@ class ConversionControllerTest {
     }
 
     @Test
+    void rechazaUnMontoConMasDeDosDecimales() throws Exception {
+        enviar("""
+                {"monto": 10.123, "monedaOrigen": "USD", "monedaDestino": "PEN"}
+                """)
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.detalles", contains("monto: admite como máximo 17 enteros y 2 decimales")));
+
+        verifyNoInteractions(conversionService);
+    }
+
+    @Test
     void rechazaUnJsonMalFormado() throws Exception {
         enviar("{\"monto\": \"cien\"")
                 .andExpect(status().isBadRequest())
@@ -90,6 +102,25 @@ class ConversionControllerTest {
         enviar(SOLICITUD_VALIDA)
                 .andExpect(status().isServiceUnavailable())
                 .andExpect(jsonPath("$.status").value(503));
+    }
+
+    @Test
+    void respondeErrorInternoSiNoSePudoRegistrarLaConversion() throws Exception {
+        when(conversionService.convertir(any()))
+                .thenThrow(new DataAccessResourceFailureException("La base de datos no responde"));
+
+        enviar(SOLICITUD_VALIDA)
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.mensaje").value("No se pudo registrar la conversión, intente nuevamente más tarde"));
+    }
+
+    @Test
+    void respondeErrorInternoAnteUnErrorInesperado() throws Exception {
+        when(conversionService.convertir(any())).thenThrow(new IllegalStateException("Fallo inesperado"));
+
+        enviar(SOLICITUD_VALIDA)
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.mensaje").value("Ocurrió un error inesperado"));
     }
 
     @Test

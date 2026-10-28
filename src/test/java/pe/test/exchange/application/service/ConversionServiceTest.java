@@ -6,10 +6,14 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.dao.DataAccessResourceFailureException;
 import pe.test.exchange.application.dto.ConversionRequest;
 import pe.test.exchange.application.dto.ConversionResponse;
 import pe.test.exchange.domain.exception.MonedaInvalidaException;
+import pe.test.exchange.domain.exception.ServicioTipoCambioNoDisponibleException;
 import pe.test.exchange.domain.model.Conversion;
+import pe.test.exchange.domain.model.Moneda;
+import pe.test.exchange.domain.model.TipoCambio;
 import pe.test.exchange.domain.repository.ConversionRepository;
 import pe.test.exchange.domain.service.ExchangeRateProvider;
 
@@ -25,6 +29,10 @@ import static org.mockito.Mockito.when;
 @ExtendWith(MockitoExtension.class)
 class ConversionServiceTest {
 
+    private static final Moneda USD = Moneda.de("USD");
+    private static final Moneda PEN = Moneda.de("PEN");
+    private static final TipoCambio TIPO_CAMBIO = TipoCambio.de(new BigDecimal("3.4486"));
+
     @Mock
     private ExchangeRateProvider exchangeRateProvider;
 
@@ -36,7 +44,7 @@ class ConversionServiceTest {
 
     @Test
     void convierteGuardaYRespondeLaConversion() {
-        when(exchangeRateProvider.obtenerTipoCambio("USD", "PEN")).thenReturn(new BigDecimal("3.4486"));
+        when(exchangeRateProvider.obtenerTipoCambio(USD, PEN)).thenReturn(TIPO_CAMBIO);
         when(conversionRepository.guardar(any(Conversion.class))).thenAnswer(invocacion -> invocacion.getArgument(0));
 
         ConversionResponse response = conversionService.convertir(
@@ -56,7 +64,7 @@ class ConversionServiceTest {
 
     @Test
     void normalizaLasMonedasAMayusculas() {
-        when(exchangeRateProvider.obtenerTipoCambio("USD", "PEN")).thenReturn(new BigDecimal("3.4486"));
+        when(exchangeRateProvider.obtenerTipoCambio(USD, PEN)).thenReturn(TIPO_CAMBIO);
         when(conversionRepository.guardar(any(Conversion.class))).thenAnswer(invocacion -> invocacion.getArgument(0));
 
         ConversionResponse response = conversionService.convertir(
@@ -68,10 +76,29 @@ class ConversionServiceTest {
 
     @Test
     void noGuardaNadaSiLaMonedaEsInvalida() {
-        when(exchangeRateProvider.obtenerTipoCambio("USD", "XYZ")).thenThrow(new MonedaInvalidaException("XYZ"));
+        when(exchangeRateProvider.obtenerTipoCambio(USD, Moneda.de("XYZ"))).thenThrow(new MonedaInvalidaException("XYZ"));
 
         assertThatThrownBy(() -> conversionService.convertir(new ConversionRequest(BigDecimal.TEN, "USD", "XYZ")))
                 .isInstanceOf(MonedaInvalidaException.class);
         verifyNoInteractions(conversionRepository);
+    }
+
+    @Test
+    void noGuardaNadaSiElServicioDeTipoDeCambioNoEstaDisponible() {
+        when(exchangeRateProvider.obtenerTipoCambio(USD, PEN)).thenThrow(new ServicioTipoCambioNoDisponibleException());
+
+        assertThatThrownBy(() -> conversionService.convertir(new ConversionRequest(BigDecimal.TEN, "USD", "PEN")))
+                .isInstanceOf(ServicioTipoCambioNoDisponibleException.class);
+        verifyNoInteractions(conversionRepository);
+    }
+
+    @Test
+    void propagaLosErroresAlGuardarLaConversion() {
+        when(exchangeRateProvider.obtenerTipoCambio(USD, PEN)).thenReturn(TIPO_CAMBIO);
+        when(conversionRepository.guardar(any(Conversion.class)))
+                .thenThrow(new DataAccessResourceFailureException("La base de datos no responde"));
+
+        assertThatThrownBy(() -> conversionService.convertir(new ConversionRequest(BigDecimal.TEN, "USD", "PEN")))
+                .isInstanceOf(DataAccessResourceFailureException.class);
     }
 }
