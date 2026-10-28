@@ -58,7 +58,7 @@ class ConversionServiceTest {
 
         ArgumentCaptor<Conversion> guardada = ArgumentCaptor.forClass(Conversion.class);
         verify(conversionRepository).guardar(guardada.capture());
-        assertThat(guardada.getValue().getMontoConvertido()).isEqualByComparingTo("344.86");
+        assertThat(guardada.getValue().getMontoConvertido().valor()).isEqualByComparingTo("344.86");
         assertThat(guardada.getValue().getFechaOperacion()).isNotNull();
     }
 
@@ -72,6 +72,15 @@ class ConversionServiceTest {
 
         assertThat(response.monedaOrigen()).isEqualTo("USD");
         assertThat(response.monedaDestino()).isEqualTo("PEN");
+    }
+
+    @Test
+    void noConsultaAlProveedorSiElMontoEsInvalido() {
+        // El DTO ya lo rechaza en el controlador; el dominio lo protege igual si el caso de uso se llama desde otro lado
+        assertThatThrownBy(() -> conversionService.convertir(
+                new ConversionRequest(new BigDecimal("10.123"), "USD", "PEN")))
+                .isInstanceOf(IllegalArgumentException.class);
+        verifyNoInteractions(exchangeRateProvider, conversionRepository);
     }
 
     @Test

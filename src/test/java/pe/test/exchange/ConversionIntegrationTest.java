@@ -55,11 +55,11 @@ class ConversionIntegrationTest {
                 .andExpect(jsonPath("$.tipoCambio").value(3.4486));
 
         assertThat(conversionJpaRepository.findAll()).singleElement().satisfies(conversion -> {
-            assertThat(conversion.getMonto()).isEqualByComparingTo("100");
+            assertThat(conversion.getMonto().valor()).isEqualByComparingTo("100");
             assertThat(conversion.getMonedaOrigen()).isEqualTo(Moneda.de("USD"));
             assertThat(conversion.getMonedaDestino()).isEqualTo(Moneda.de("PEN"));
             assertThat(conversion.getTipoCambio().valor()).isEqualByComparingTo("3.4486");
-            assertThat(conversion.getMontoConvertido()).isEqualByComparingTo("344.86");
+            assertThat(conversion.getMontoConvertido().valor()).isEqualByComparingTo("344.86");
             assertThat(conversion.getFechaOperacion()).isNotNull();
         });
     }

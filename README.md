@@ -131,7 +131,7 @@ Almacenar cada conversión en H2 con los siguientes datos:
 pe.test.exchange
 ├── domain
 │   ├── model           Conversion: entidad JPA con la regla de cálculo
-│   │                   Moneda, TipoCambio: Value Objects
+│   │                   Moneda, Monto, TipoCambio: Value Objects
 │   ├── repository      ConversionRepository: contrato de persistencia
 │   ├── service         ExchangeRateProvider: contrato para obtener el tipo de cambio
 │   └── exception       MonedaInvalidaException, ServicioTipoCambioNoDisponibleException
@@ -142,7 +142,7 @@ pe.test.exchange
 └── infrastructure
     ├── external        ExchangeRateApiClient (Feign) y ExchangeRateApiAdapter
     └── persistence     ConversionJpaRepository, ConversionRepositoryImpl
-                        MonedaConverter, TipoCambioConverter
+                        MonedaConverter, MontoConverter, TipoCambioConverter
 ```
 
 ### Flujo
@@ -157,9 +157,14 @@ pe.test.exchange
 ### Decisiones de diseño
 
 - **El dominio no depende de Feign ni de Spring Data.** Solo define los contratos `ExchangeRateProvider` y `ConversionRepository`, y la infraestructura los implementa.
-- **La regla de negocio vive en el modelo.** `Conversion.crear(...)` calcula `monto × tipoCambio` con `BigDecimal`, redondea a 2 decimales con `HALF_UP` y valida que el monto sea positivo.
-- **Value Objects.** `Moneda` garantiza un código de 3 letras en mayúsculas. `TipoCambio` garantiza un valor positivo con 10 decimales como máximo y compara por valor numérico, así que `3.4486` y `3.44860` son el mismo tipo de cambio. Son inmutables (`record`) y validan al construirse, así que un `Conversion` nunca tiene una moneda o un tipo de cambio inválidos, venga de donde venga.
-- **Los Value Objects no conocen JPA.** `Conversion` sigue siendo la entidad JPA, pero `Moneda` y `TipoCambio` se guardan como columnas simples (`varchar(3)` y `numeric(19,10)`) con dos `AttributeConverter` de infraestructura con `autoApply`. Así el dominio no referencia ninguna clase de infraestructura.
+- **La regla de negocio vive en el modelo.** `Monto.convertir(tipoCambio)` calcula `monto × tipoCambio` con `BigDecimal` y redondea a 2 decimales con `HALF_UP`. `Conversion.crear(...)` exige que el monto a convertir sea mayor a cero.
+- **Value Objects.** Son inmutables (`record`), validan al construirse y comparan por valor:
+  - `Moneda` garantiza un código de 3 letras en mayúsculas.
+  - `Monto` garantiza un valor no negativo con 2 decimales como máximo; `100` y `100.00` son el mismo monto. Admite cero porque un monto convertido puede redondear a `0.00` (por ejemplo, 0.01 VND en USD). Que el monto a convertir sea mayor a cero es regla de la conversión, no del dinero. El límite de 17 enteros tampoco está aquí: es del request, porque un monto convertido puede tener más.
+  - `TipoCambio` garantiza un valor positivo con 10 decimales como máximo; `3.4486` y `3.44860` son el mismo tipo de cambio.
+
+  Así un `Conversion` nunca tiene un monto, una moneda o un tipo de cambio inválidos, venga de donde venga la llamada. El DTO valida lo mismo antes, para responder 400 con el detalle por campo.
+- **Los Value Objects no conocen JPA.** `Conversion` sigue siendo la entidad JPA, pero los Value Objects se guardan como columnas simples (`varchar(3)` y `numeric`) con `AttributeConverter` de infraestructura con `autoApply`. Así el dominio no referencia ninguna clase de infraestructura.
 - **Columnas dimensionadas para no perder datos.** `tipo_cambio` guarda los 10 decimales del `TipoCambio`, así que se guarda el mismo valor que se aplicó y se respondió. Antes eran 6 y una tasa como VND → USD (0.0000394117) se guardaba como 0.000039. `monto_convertido` tiene 28 dígitos: 17 enteros del monto más 9 del tipo de cambio. Antes eran 19, y un monto de 17 enteros con un tipo de cambio alto desbordaba la columna.
 - **Moneda no soportada.** ExchangeRate-API responde `404` con `"error-type": "unsupported-code"` en el cuerpo. El cliente Feign usa `dismiss404` para decodificar ese cuerpo y el adaptador lo convierte en `MonedaInvalidaException`. Si la moneda destino no aparece entre las tasas, también se trata como moneda inválida.
 - **Respuesta inválida del proveedor.** Si la API responde algo que no es JSON, una lista de tasas vacía o un tipo de cambio de 0 o negativo, el adaptador lanza `ServicioTipoCambioNoDisponibleException` y se responde 503. Es un error del proveedor: no se culpa al cliente con un 400 ni se responde un 500 genérico.
@@ -303,9 +308,9 @@ Todas las respuestas de error tienen el mismo formato:
 
 | Clase | Qué cubre |
 |---|---|
-| `ConversionTest` | Cálculo, redondeo `HALF_UP`, tipos de cambio muy pequeños, fecha de la operación e invariantes del dominio |
-| `MonedaTest`, `TipoCambioTest` | Validación, normalización, escala e igualdad por valor de los Value Objects |
-| `ConversionServiceTest` | Orquestación del caso de uso, normalización, que no se guarde nada si falla el proveedor y que un error al guardar se propague |
+| `ConversionTest` | Cálculo con 2 decimales, tipos de cambio muy pequeños, fecha de la operación y rechazo de un monto de cero |
+| `MonedaTest`, `MontoTest`, `TipoCambioTest` | Validación, normalización, escala, redondeo e igualdad por valor de los Value Objects |
+| `ConversionServiceTest` | Orquestación del caso de uso, normalización, que no se consulte al proveedor con un monto inválido, que no se guarde nada si falla el proveedor y que un error al guardar se propague |
 | `ExchangeRateApiAdapterTest` | Conversión de respuestas de la API en errores de dominio, incluidas las inválidas: sin cuerpo, sin tasas y tipo de cambio ≤ 0 |
 | `ExchangeRateApiAdapterIntegrationTest` | Cliente Feign real y Resilience4j contra un servidor HTTP local que imita la API: 404 `unsupported-code` sin reintento, 403 sin reintento, respuesta que no es JSON, reintentos ante 5xx y timeouts, recuperación en el segundo intento, apertura del circuito, paso de semiabierto a cerrado o de vuelta a abierto, y que una moneda inválida no cuente como fallo |
 | `ExchangeRateApiAdapterProveedorCaidoTest` | API caída (puerto sin servidor): 3 intentos que cuentan como fallos del circuito y 503 |

@@ -24,8 +24,8 @@ public record ConversionResponse(
 ) {
     public static ConversionResponse desde(Conversion conversion) {
         return new ConversionResponse(
-                conversion.getMonto(),
-                conversion.getMontoConvertido(),
+                conversion.getMonto().valor(),
+                conversion.getMontoConvertido().valor(),
                 conversion.getMonedaOrigen().codigo(),
                 conversion.getMonedaDestino().codigo(),
                 conversion.getTipoCambio().valor()
